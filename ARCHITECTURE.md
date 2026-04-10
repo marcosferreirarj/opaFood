@@ -27,6 +27,10 @@ opaFood/
 │   │       └── [orderId]/
 │   │           └── page.js           # Server: resolve storeId → monta OrderTracker
 │   │
+│   ├── api/                          # Route Handlers (Next.js)
+│   │   └── upload-image/
+│   │       └── route.js              # POST: proxy seguro para imgbb (dev apenas; chave nunca exposta ao browser)
+│   │
 │   ├── dashboard/                    # Painel do lojista (protegido por Auth)
 │   │   ├── page.js                   # Login (Firebase Auth email/senha)
 │   │   ├── produtos/
@@ -105,7 +109,7 @@ firestore-root/
 │   │   ├── name: string
 │   │   ├── description: string
 │   │   ├── price: number                  ← sempre em reais (float)
-│   │   ├── imageUrl: string | null        ← URL do Firebase Storage
+│   │   ├── imageUrl: string | null        ← URL do Firebase Storage (prod) ou imgbb (dev)
 │   │   ├── categoryId: string | null
 │   │   ├── isAvailable: boolean
 │   │   ├── order: number                  ← Date.now() na criação (ordenação manual)
@@ -269,9 +273,10 @@ Requisição → unstable_cache → HIT: retorna cache (0 reads no Firestore)
                           ├── query stores where ownerId == uid
                           ├── getDocs stores/{storeId}/products
                           └── <AddProductModal>
-                                  ├── uploadBytes → Firebase Storage
-                                  │     stores/{storeId}/products/{productId}
-                                  ├── getDownloadURL → imageUrl
+                                  ├── [dev mock]   URL.createObjectURL (sem upload)
+                                  ├── [dev real]   POST /api/upload-image → imgbb → imageUrl
+                                  ├── [produção]   uploadBytes → Firebase Storage
+                                  │                getDownloadURL → imageUrl
                                   └── setDoc stores/{storeId}/products/{productId}
 
 /dashboard/pedidos  → PedidosPage
@@ -454,19 +459,47 @@ OrderTracker do cliente atualiza o stepper automaticamente via onSnapshot
 
 ---
 
-## Upload de Imagens — Firebase Storage
+## Upload de Imagens
 
-Caminho no Storage: `stores/{storeId}/products/{productId}`
+O upload tem comportamento diferente por ambiente. A decisão é feita no `AddProductModal` com base em `isDevLoginEnabled` e `process.env.NODE_ENV`:
 
-**Fluxo no `AddProductModal`:**
+| Situação | Comportamento |
+|---|---|
+| `isDevLoginEnabled = true` (mock) | `URL.createObjectURL` — prévia local, sem nenhum upload |
+| `NODE_ENV = development` (Firebase real) | `POST /api/upload-image` → imgbb |
+| Produção | `uploadBytes` → Firebase Storage |
+
+### Produção — Firebase Storage
+
+Caminho: `stores/{storeId}/products/{productId}`
+
 1. Usuário seleciona arquivo (validado: tipo imagem, máx. 5 MB)
 2. Preview local via `URL.createObjectURL`
-3. No submit: `doc(collection(...))` gera o `productId`
+3. `doc(collection(...))` gera `productId` sem criar o documento
 4. `uploadBytes(storageRef, file)` envia a imagem
 5. `getDownloadURL(ref)` obtém a URL pública
 6. `setDoc(productRef, { ...dados, imageUrl })` salva o produto
 
-A URL gerada pelo Storage é adicionada ao campo `imageUrl` do produto e também copiada para o snapshot de cada `OrderItem` no momento do checkout.
+### Desenvolvimento — imgbb via Route Handler
+
+O Route Handler `app/api/upload-image/route.js` age como proxy seguro:
+
+```
+Browser → POST /api/upload-image (FormData: image + name)
+               ↓
+    Route Handler (servidor Next.js)
+    lê process.env.IMGBB_API_KEY       ← nunca sai do servidor
+               ↓
+    POST https://api.imgbb.com/1/upload
+               ↓
+    devolve { url } para o browser
+```
+
+- A variável `IMGBB_API_KEY` **não tem prefixo `NEXT_PUBLIC_`** — nunca aparece no bundle JS do cliente.
+- O Route Handler retorna `403` fora de `NODE_ENV=development` como segunda camada de proteção.
+- O campo `name` enviado ao imgbb é o nome do produto digitado no formulário.
+
+A URL retornada é salva no campo `imageUrl` do produto e copiada para o snapshot de cada `OrderItem` no checkout.
 
 ---
 
@@ -618,6 +651,7 @@ Copie `.env.local.example` para `.env.local` e preencha:
 | `FIREBASE_CLIENT_EMAIL` | Servidor (privado) | JSON da conta de serviço |
 | `FIREBASE_PRIVATE_KEY` | Servidor (privado) | JSON da conta de serviço (aspas, `\n` literais) |
 | `ADMIN_UID` | Servidor (privado) | UID do usuário admin no Firebase Auth |
+| `IMGBB_API_KEY` | Servidor (privado) | [api.imgbb.com](https://api.imgbb.com/) — usado apenas em `NODE_ENV=development` |
 
 > Na Vercel, cole a `FIREBASE_PRIVATE_KEY` com `\n` literais. O `firebase-admin.js` faz `.replace(/\\n/g, '\n')` automaticamente.
 
@@ -680,5 +714,6 @@ npm run dev
 | **Sprint 7** | Cardápio v2: categorias sticky, busca em tempo real, status da loja via `onSnapshot`, melhorias de acessibilidade (Lighthouse) | ✅ |
 | **Sprint 8** | Carrinho v2: persistência em localStorage, observações do pedido, drawer responsivo (full-screen mobile / slide-over desktop) com transições CSS, validação de carrinho vazio | ✅ |
 | **Sprint 9** | UI polish: Framer Motion (animações de página, itens do carrinho, troca de estado do ProductCard, CartBottomBar spring), responsividade 320px (iPhone SE), `lg:grid-cols-4` no grid de produtos | ✅ |
-| **Sprint 10** | Configurações da loja: horário, taxa de entrega, área de cobertura | — |
-| **Sprint 11** | Onboarding: fluxo de cadastro de nova loja pelo próprio lojista | — |
+| **Sprint 10** | Dev tooling: upload de imagens via imgbb em desenvolvimento (Route Handler proxy seguro; Firebase Storage mantido em produção) | ✅ |
+| **Sprint 11** | Configurações da loja: horário, taxa de entrega, área de cobertura | — |
+| **Sprint 12** | Onboarding: fluxo de cadastro de nova loja pelo próprio lojista | — |

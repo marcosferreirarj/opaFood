@@ -42,7 +42,8 @@ service cloud.firestore {
     // sem autenticação (cardápio público).
     match /slugs/{slug} {
       allow read:  if true;
-      allow write: if false; // Gerenciado apenas via Admin SDK (createLojista / updateStore)
+      allow create: if isAuthenticated();
+      allow update, delete: if false; 
     }
 
     // ─── stores ───────────────────────────────────────────────────────────────
