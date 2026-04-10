@@ -2,12 +2,21 @@
 
 import { adminDb, adminAuth } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
+import { randomBytes } from 'crypto';
+
+function generateTempPassword() {
+  return randomBytes(12).toString('base64url'); // ~16 chars, URL-safe
+}
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 async function verifyAdmin(idToken) {
   const decoded = await adminAuth.verifyIdToken(idToken);
+  console.log('🔍 [Admin Auth] UID decodificado:', decoded.uid);
+  console.log('🔍 [Admin Auth] UID esperado (ENV):', process.env.ADMIN_UID);
+
   if (decoded.uid !== process.env.ADMIN_UID) {
+    console.warn('❌ [Admin Auth] UID não corresponde ao ADMIN_UID configurado.');
     throw new Error('Não autorizado');
   }
   return decoded;
@@ -32,8 +41,9 @@ export async function checkAdminToken(idToken) {
   try {
     await verifyAdmin(idToken);
     return { ok: true };
-  } catch {
-    return { ok: false };
+  } catch (err) {
+    console.error('❌ [Admin Action] checkAdminToken falhou:', err.message);
+    return { ok: false, error: err.message };
   }
 }
 
@@ -51,7 +61,7 @@ export async function getAllStores(idToken) {
 export async function createLojista(idToken, formData) {
   await verifyAdmin(idToken);
 
-  const { email, password, storeName, slug, phone, deliveryFee, minOrder } = formData;
+  const { email, storeName, slug, phone, deliveryFee, minOrder } = formData;
 
   if (!/^[a-z0-9-]+$/.test(slug)) {
     throw new Error('Slug inválido. Use apenas letras minúsculas, números e hífens.');
@@ -62,11 +72,22 @@ export async function createLojista(idToken, formData) {
     throw new Error('Este slug já está em uso. Escolha outro.');
   }
 
+  const tempPassword = generateTempPassword();
+
   const userRecord = await adminAuth.createUser({
     email,
-    password,
+    password: tempPassword,
     displayName: storeName,
   });
+
+  // Generate a password reset link so the lojista can set their own password.
+  // The client will call sendPasswordResetEmail() to dispatch it via Firebase.
+  let resetLink = null;
+  try {
+    resetLink = await adminAuth.generatePasswordResetLink(email);
+  } catch {
+    // Non-fatal — client will still send a reset email after creation.
+  }
 
   const storeRef  = adminDb.collection('stores').doc();
   const storeData = {
@@ -88,15 +109,17 @@ export async function createLojista(idToken, formData) {
   await adminDb.collection('slugs').doc(slug).set({ storeId: storeRef.id });
 
   return {
-    id:        storeRef.id,
-    uid:       userRecord.uid,
-    name:      storeName,
+    id:          storeRef.id,
+    uid:         userRecord.uid,
+    name:        storeName,
     slug,
-    phone:     phone || '',
+    email,
+    phone:       phone || '',
     deliveryFee: parseFloat(deliveryFee) || 0,
     minOrder:    parseFloat(minOrder)    || 0,
-    isOpen:    false,
-    createdAt: new Date().toISOString(),
+    isOpen:      false,
+    createdAt:   new Date().toISOString(),
+    resetLink,   // null if generation failed; client falls back to sendPasswordResetEmail
   };
 }
 

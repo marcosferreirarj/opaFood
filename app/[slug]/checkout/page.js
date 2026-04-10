@@ -3,6 +3,7 @@
 import { useState }   from 'react';
 import { useRouter }  from 'next/navigation';
 import Link           from 'next/link';
+import { motion }     from 'framer-motion';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db }         from '@/lib/firebase';
 import { useCart }    from '@/context/CartContext';
@@ -18,7 +19,7 @@ const PAYMENT_METHODS = [
 
 export default function CheckoutPage({ params }) {
   const router = useRouter();
-  const { items, subtotal, total, deliveryFee, clearCart, storeId, storeSlug } = useCart();
+  const { items, notes, subtotal, total, deliveryFee, clearCart, storeId, storeSlug } = useCart();
 
   const [form, setForm] = useState({
     customerName:  '',
@@ -40,7 +41,12 @@ export default function CheckoutPage({ params }) {
   // Redireciona se o carrinho estiver vazio (ex: reload pós-pedido)
   if (items.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-20 text-center">
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, ease: 'easeOut' }}
+        className="flex flex-col items-center justify-center py-20 text-center"
+      >
         <p className="text-5xl mb-4">🛍️</p>
         <p className="text-gray-400 mb-6">Sua sacola está vazia.</p>
         <Link
@@ -50,7 +56,7 @@ export default function CheckoutPage({ params }) {
         >
           Voltar ao cardápio
         </Link>
-      </div>
+      </motion.div>
     );
   }
 
@@ -80,6 +86,7 @@ export default function CheckoutPage({ params }) {
         ...(form.paymentMethod === 'cash' && form.changeFor
           ? { changeFor: parseFloat(form.changeFor.replace(',', '.')) }
           : {}),
+        ...(notes.trim() ? { notes: notes.trim() } : {}),
         status:    'pending',
         userId:    null,         // pedido anônimo no MVP
         createdAt: serverTimestamp(),
@@ -96,7 +103,12 @@ export default function CheckoutPage({ params }) {
   }
 
   return (
-    <div className="max-w-lg mx-auto space-y-5">
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: 'easeOut' }}
+      className="max-w-lg mx-auto space-y-5"
+    >
       {/* Voltar */}
       <Link
         href={`/${params.slug}`}
@@ -214,6 +226,12 @@ export default function CheckoutPage({ params }) {
               </div>
             ))}
           </div>
+          {notes.trim() && (
+            <div className="border-t mt-3 pt-3">
+              <p className="text-xs font-medium text-gray-600 mb-1">Observações</p>
+              <p className="text-sm text-gray-500 whitespace-pre-wrap">{notes.trim()}</p>
+            </div>
+          )}
           <div className="border-t mt-3 pt-3 space-y-1.5">
             <div className="flex justify-between text-sm text-gray-500">
               <span>Subtotal</span><span>{brl(subtotal)}</span>
@@ -231,17 +249,18 @@ export default function CheckoutPage({ params }) {
 
         {error && <p className="text-brand-red text-sm text-center">{error}</p>}
 
-        <button
+        <motion.button
           type="submit"
           disabled={saving}
+          whileTap={saving ? undefined : { scale: 0.97 }}
           className="w-full bg-brand-red text-white font-bold py-4 rounded-2xl
                      hover:bg-brand-red-dark transition-colors disabled:opacity-60
-                     text-base active:scale-[0.98]"
+                     text-base"
         >
           {saving ? 'Enviando pedido…' : `Confirmar pedido · ${brl(total)}`}
-        </button>
+        </motion.button>
       </form>
-    </div>
+    </motion.div>
   );
 }
 

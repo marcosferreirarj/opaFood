@@ -185,11 +185,13 @@ function AddProductModal({ storeId, onClose, onSuccess }) {
       let imageUrl = null;
 
       // 1. Upload da imagem (se houver)
-      if (imageFile) {
+      if (imageFile && !isDevLoginEnabled) {
         setUploadStep('Enviando imagem…');
         const imgRef = storageRef(storage, `stores/${storeId}/products/${productId}`);
         await uploadBytes(imgRef, imageFile);
         imageUrl = await getDownloadURL(imgRef);
+      } else if (imageFile && isDevLoginEnabled) {
+        imageUrl = imagePreview; // usa a URL local em modo dev
       }
 
       // 2. Salva o documento com setDoc (usa o ID pré-gerado)

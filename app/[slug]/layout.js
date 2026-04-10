@@ -28,7 +28,7 @@ export default async function StoreLayout({ children, params }) {
         <StoreHeader store={store} />
 
         {/* pb-32 reserva espaço para o CartBottomBar fixo no mobile */}
-        <main className="max-w-4xl mx-auto px-4 pt-6 pb-32">
+        <main className="max-w-4xl mx-auto px-4 pt-4 pb-32">
           {children}
         </main>
 

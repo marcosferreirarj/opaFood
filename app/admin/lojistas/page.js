@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter }                         from 'next/navigation';
-import { onAuthStateChanged, signOut }       from 'firebase/auth';
+import { onAuthStateChanged, signOut, sendPasswordResetEmail } from 'firebase/auth';
 import { auth }                              from '@/lib/firebase';
 import {
   checkAdminToken, getAllStores,
@@ -34,13 +34,19 @@ export default function AdminLojistasPage() {
   const [user,        setUser]        = useState(null);
   const [stores,      setStores]      = useState([]);
   const [loading,     setLoading]     = useState(true);
+  const [error,       setError]       = useState(null);
   const [showCreate,  setShowCreate]  = useState(false);
   const [editStore,   setEditStore]   = useState(null);
 
   const loadStores = useCallback(async (firebaseUser) => {
-    const token = await firebaseUser.getIdToken();
-    const data  = await getAllStores(token);
-    setStores(data);
+    try {
+      const token = await firebaseUser.getIdToken();
+      const data  = await getAllStores(token);
+      setStores(data);
+    } catch (err) {
+      console.error('Erro ao carregar lojas:', err);
+      setError(err.message || 'Falha ao carregar a lista de lojistas.');
+    }
   }, []);
 
   useEffect(() => {
@@ -74,6 +80,34 @@ export default function AdminLojistasPage() {
   }
 
   if (loading) return <FullPageSpinner />;
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4 text-center">
+        <div className="max-w-md">
+          <p className="text-4xl mb-4">⚠️</p>
+          <h1 className="text-white font-bold text-xl mb-2">Erro de Carregamento</h1>
+          <p className="text-gray-400 mb-6">{error}</p>
+          {error.includes('credentials') && (
+            <div className="bg-brand-red/10 border border-brand-red/20 rounded-xl p-4 text-left mb-6">
+              <p className="text-brand-red text-sm font-semibold mb-1">Dica técnica:</p>
+              <p className="text-gray-400 text-xs leading-relaxed">
+                O servidor não conseguiu carregar as credenciais do Admin SDK. 
+                Certifique-se de que <b>FIREBASE_CLIENT_EMAIL</b> e <b>FIREBASE_PRIVATE_KEY</b> 
+                estão configuradas no seu arquivo <b>.env.local</b>.
+              </p>
+            </div>
+          )}
+          <button
+            onClick={() => window.location.reload()}
+            className="bg-gray-800 text-white px-6 py-2 rounded-xl hover:bg-gray-700 transition-colors"
+          >
+            Tentar novamente
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const open   = stores.filter((s) => s.isOpen).length;
   const closed = stores.length - open;
@@ -221,14 +255,15 @@ function CreateModal({ user, onClose, onSuccess }) {
     storeName:   '',
     slug:        '',
     email:       '',
-    password:    '',
     phone:       '',
     deliveryFee: '',
     minOrder:    '',
   });
-  const [saving,    setSaving]    = useState(false);
-  const [error,     setError]     = useState('');
-  const [created,   setCreated]   = useState(null); // guarda credenciais após criação
+  const [saving,         setSaving]         = useState(false);
+  const [error,          setError]          = useState('');
+  const [created,        setCreated]        = useState(null);
+  const [emailSentTo,    setEmailSentTo]    = useState(null);
+  const [emailSendError, setEmailSendError] = useState(false);
 
   function handleChange(field, value) {
     setForm((prev) => {
@@ -253,14 +288,22 @@ function CreateModal({ user, onClose, onSuccess }) {
       const token  = await user.getIdToken();
       const result = await createLojista(token, {
         email:       form.email,
-        password:    form.password,
         storeName:   form.storeName,
         slug:        form.slug,
         phone:       form.phone,
         deliveryFee: form.deliveryFee,
         minOrder:    form.minOrder,
       });
-      setCreated({ ...result, email: form.email, password: form.password });
+
+      // Send Firebase password-reset email so the lojista can set their own password.
+      try {
+        await sendPasswordResetEmail(auth, form.email);
+        setEmailSentTo(form.email);
+      } catch {
+        setEmailSendError(true); // Creation succeeded; only email dispatch failed.
+      }
+
+      setCreated(result);
       onSuccess(result);
     } catch (err) {
       setError(err.message || 'Erro ao criar lojista.');
@@ -275,22 +318,40 @@ function CreateModal({ user, onClose, onSuccess }) {
                       w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto">
 
         {created ? (
-          /* ── Tela de sucesso com credenciais ── */
+          /* ── Tela de sucesso ── */
           <div className="text-center">
-            <div className="w-14 h-14 bg-green-900/40 rounded-full flex items-center justify-center
-                            text-3xl mx-auto mb-4">
-              ✓
+            <div className="w-14 h-14 bg-green-900/40 border border-green-700/50 rounded-full
+                            flex items-center justify-center mx-auto mb-4">
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7 text-green-400" fill="none"
+                   viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
             </div>
+
             <h2 className="font-bold text-xl text-white mb-1">Lojista criado!</h2>
-            <p className="text-gray-400 text-sm mb-6">
-              Compartilhe as credenciais abaixo com o lojista.
-            </p>
+
+            {emailSentTo ? (
+              <p className="text-gray-400 text-sm mb-6">
+                Email de acesso enviado para{' '}
+                <span className="text-white font-medium">{emailSentTo}</span>.
+                <br />
+                O lojista deve seguir o link para definir sua senha.
+              </p>
+            ) : emailSendError ? (
+              <p className="text-yellow-500 text-sm mb-6">
+                Conta criada, mas o email de boas-vindas não pôde ser enviado.
+                Você pode reenviar pelo Firebase Console.
+              </p>
+            ) : (
+              <p className="text-gray-400 text-sm mb-6">
+                Conta e loja criadas com sucesso.
+              </p>
+            )}
 
             <div className="bg-gray-800 rounded-xl p-4 text-left space-y-3 mb-6">
-              <CredRow label="Loja"     value={created.name} />
-              <CredRow label="URL"      value={`opadelivery.com/${created.slug}`} />
-              <CredRow label="E-mail"   value={created.email}    copyable />
-              <CredRow label="Senha"    value={created.password} copyable />
+              <CredRow label="Loja" value={created.name} />
+              <CredRow label="URL"  value={`opadelivery.com/${created.slug}`} />
+              <CredRow label="E-mail" value={created.email} copyable />
             </div>
 
             <button
@@ -364,7 +425,7 @@ function CreateModal({ user, onClose, onSuccess }) {
               </Section>
 
               <Section title="Acesso ao dashboard">
-                <Field label="E-mail *">
+                <Field label="E-mail do lojista *">
                   <Input
                     type="email"
                     value={form.email}
@@ -373,17 +434,10 @@ function CreateModal({ user, onClose, onSuccess }) {
                     required
                   />
                 </Field>
-
-                <Field label="Senha *">
-                  <Input
-                    type="password"
-                    value={form.password}
-                    onChange={(v) => handleChange('password', v)}
-                    placeholder="mínimo 6 caracteres"
-                    required
-                    minLength={6}
-                  />
-                </Field>
+                <p className="text-xs text-gray-500 -mt-1">
+                  Uma senha temporária será gerada automaticamente e um email de acesso
+                  será enviado ao lojista.
+                </p>
               </Section>
 
               {error && <p className="text-brand-red text-sm">{error}</p>}

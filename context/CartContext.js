@@ -1,12 +1,34 @@
 'use client';
 
-import { createContext, useContext, useState, useCallback } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect } from 'react';
 
 const CartContext = createContext(null);
 
 export function CartProvider({ children, storeId, storeSlug, storeName = '', deliveryFee = 0 }) {
+  const storageKey = `opafood_cart_${storeId}`;
+
   const [items, setItems]           = useState([]);
+  const [notes, setNotes]           = useState('');
   const [isCartOpen, setIsCartOpen] = useState(false);
+
+  // Hydrate from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed.items)) setItems(parsed.items);
+        if (typeof parsed.notes === 'string') setNotes(parsed.notes);
+      }
+    } catch {}
+  }, [storageKey]);
+
+  // Persist items + notes to localStorage on every change
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ items, notes }));
+    } catch {}
+  }, [items, notes, storageKey]);
 
   // Adiciona 1 unidade do produto; se já existe, incrementa.
   const addItem = useCallback((product) => {
@@ -38,7 +60,11 @@ export function CartProvider({ children, storeId, storeSlug, storeName = '', del
     [removeItem]
   );
 
-  const clearCart = useCallback(() => setItems([]), []);
+  const clearCart = useCallback(() => {
+    setItems([]);
+    setNotes('');
+    try { localStorage.removeItem(storageKey); } catch {}
+  }, [storageKey]);
 
   const itemCount = items.reduce((sum, i) => sum + i.quantity, 0);
   const subtotal  = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
@@ -48,6 +74,8 @@ export function CartProvider({ children, storeId, storeSlug, storeName = '', del
     <CartContext.Provider
       value={{
         items,
+        notes,
+        setNotes,
         itemCount,
         subtotal,
         total,
