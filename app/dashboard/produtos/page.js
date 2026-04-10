@@ -45,6 +45,22 @@ export default function ProdutosPage() {
 
         const prodSnap = await getDocs(collection(db, `stores/${d.id}/products`));
         setProducts(prodSnap.docs.map((p) => ({ id: p.id, ...p.data() })));
+      } else {
+        // Auto-create a default store for the user if they don't have one
+        try {
+          const newStoreRef = doc(collection(db, 'stores'));
+          const newStoreData = {
+            name: 'Minha Loja ' + newStoreRef.id.slice(0, 4),
+            slug: 'loja-' + newStoreRef.id.slice(0, 6).toLowerCase(),
+            ownerId: user.uid,
+            createdAt: serverTimestamp(),
+          };
+          await setDoc(newStoreRef, newStoreData);
+          setStore({ id: newStoreRef.id, ...newStoreData });
+          setProducts([]);
+        } catch (err) {
+          console.error("Erro ao auto-criar loja:", err);
+        }
       }
       setLoading(false);
     });
@@ -166,7 +182,10 @@ function AddProductModal({ storeId, onClose, onSuccess }) {
 
   async function handleSubmit(e) {
     e.preventDefault();
-    if (!storeId) return;
+    if (!storeId) {
+      setError('Erro crítico: ID da loja não encontrado.');
+      return;
+    }
 
     const parsedPrice = parseFloat(price.replace(',', '.'));
     if (isNaN(parsedPrice) || parsedPrice <= 0) {
@@ -211,8 +230,9 @@ function AddProductModal({ storeId, onClose, onSuccess }) {
       }
 
       onSuccess({ id: productId, ...productData, imageUrl });
-    } catch {
-      setError('Erro ao salvar produto. Tente novamente.');
+    } catch (err) {
+      console.error('Erro ao salvar produto:', err);
+      setError(`Erro ao salvar produto: ${err.message || 'Tente novamente.'}`);
     } finally {
       setSaving(false);
       setUploadStep('');

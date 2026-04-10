@@ -1,19 +1,24 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState }  from 'react';
+import { useStoreContext }       from '@/context/StoreContext';
 
 const brl = (v) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
 
 /**
- * Shows real-time open/closed status for a store.
- * Subscribes to Firestore onSnapshot so the badge updates without a page reload
- * when the store owner toggles their status.
+ * StoreStatusBadge — exibe o status aberto/fechado e a taxa de entrega da loja.
  *
- * In dev mode (NEXT_PUBLIC_DEV_LOGIN=true) the subscription is skipped and
- * `initialIsOpen` is used as a static value to avoid hitting Firebase.
+ * Subscreve ao Firestore via onSnapshot para refletir mudanças de status em
+ * tempo real (o lojista pode abrir/fechar a loja pelo dashboard sem que o
+ * cliente precise recarregar a página).
+ *
+ * Lê todos os dados de que precisa via useStoreContext() — sem props.
+ * Em dev mode (NEXT_PUBLIC_DEV_LOGIN=true) a subscrição é ignorada e o
+ * valor inicial do contexto é usado como estático.
  */
-export default function StoreStatusBadge({ storeId, initialIsOpen, deliveryFee }) {
+export default function StoreStatusBadge() {
+  const { id: storeId, isOpen: initialIsOpen, deliveryFee } = useStoreContext();
   const [isOpen, setIsOpen] = useState(initialIsOpen);
 
   useEffect(() => {

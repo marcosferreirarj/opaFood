@@ -1,8 +1,9 @@
 'use client';
 
-import Image           from 'next/image';
-import { useCart }     from '@/context/CartContext';
-import StoreStatusBadge from './StoreStatusBadge';
+import Image              from 'next/image';
+import { useCart }        from '@/context/CartContext';
+import { useStoreContext } from '@/context/StoreContext';
+import StoreStatusBadge   from './StoreStatusBadge';
 
 function CartIcon() {
   return (
@@ -13,7 +14,8 @@ function CartIcon() {
   );
 }
 
-export default function StoreHeader({ store }) {
+export default function StoreHeader() {
+  const store                     = useStoreContext();
   const { itemCount, setIsCartOpen } = useCart();
 
   return (
@@ -62,16 +64,12 @@ export default function StoreHeader({ store }) {
             )}
           </div>
 
-          {/* Name + status */}
+          {/* Name + status — StoreStatusBadge lê storeId/isOpen/deliveryFee do StoreContext */}
           <div className="flex-1 min-w-0">
             <h1 className="font-bold text-gray-900 text-sm leading-tight truncate">
               {store.name}
             </h1>
-            <StoreStatusBadge
-              storeId={store.id}
-              initialIsOpen={store.isOpen}
-              deliveryFee={store.deliveryFee}
-            />
+            <StoreStatusBadge />
           </div>
 
           {/* Cart button */}

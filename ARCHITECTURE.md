@@ -53,6 +53,7 @@ opaFood/
 │   └── DashboardNav.js               # Navbar compartilhada do painel (tabs + sign out)
 │
 ├── context/
+│   ├── StoreContext.js               # Metadados da loja atual (id, name, slug, isOpen, deliveryFee…) — multi-tenant
 │   └── CartContext.js                # Estado global do carrinho com persistência em localStorage
 │
 ├── lib/
@@ -157,16 +158,26 @@ Arquivo: [`firestore.rules`](firestore.rules)
 | Recurso | Leitura | Escrita |
 |---|---|---|
 | `slugs/{slug}` | Pública | Bloqueada (apenas Admin SDK) |
-| `stores/{storeId}` | Pública | `create`: autenticado com `ownerId == uid` / `update/delete`: somente o owner |
+| `stores/{storeId}` | Pública | `create`: autenticado com `ownerId == uid` / `update`: owner + `ownerId` e `slug` imutáveis / `delete`: somente o owner |
 | `stores/{storeId}/products` | Pública | Somente o owner da loja pai |
 | `stores/{storeId}/categories` | Pública | Somente o owner da loja pai |
 | `stores/{storeId}/orders` | **Pública** | `create`: público (pedido anônimo) / `update`: somente o owner / `delete`: bloqueado |
 | `users/{userId}` | Próprio documento | Próprio documento |
 
-**Por que `orders` tem leitura pública?**
-O cliente precisa acompanhar seu pedido em `/[slug]/pedido/[orderId]` sem estar autenticado. O `orderId` gerado pelo Firestore tem 20 caracteres alfanuméricos aleatórios — a probabilidade de adivinhar um ID válido é desprezível na prática (similar a um token de sessão curto). Isso é um tradeoff consciente do MVP.
+### Isolamento entre tenants
 
-A função auxiliar `isStoreOwner(storeId)` faz 1 leitura extra no documento `stores/{storeId}` para verificar o `ownerId`. Isso ocorre apenas em operações de **escrita**, nunca em leituras públicas.
+A função `isStoreOwner(storeId)` faz 1 leitura extra no documento `stores/{storeId}` para verificar que `ownerId == request.auth.uid`. Isso garante que o Admin da Loja A **não possa escrever** em nenhum recurso da Loja B, mesmo conhecendo o `storeId` dela — o caminho Firestore sozinho não é suficiente para proteger sem esta verificação de ownership.
+
+### Guards de imutabilidade (novo)
+
+O `update` em `stores/{storeId}` agora verifica duas funções auxiliares adicionais:
+
+- **`ownerIdUnchanged()`** — impede que qualquer cliente (inclusive o próprio owner) altere o `ownerId` via update. Transferências de propriedade só ocorrem via Admin SDK (que bypassa as regras).
+- **`slugUnchanged()`** — impede que o `slug` seja alterado via cliente. O slug é a chave do índice `slugs/{slug}`: alterá-lo sem também atualizar o índice quebraria a resolução de URLs. Mudanças de slug devem ser feitas via Server Action (que atualiza ambos atomicamente).
+
+### Por que `orders` tem leitura pública?
+
+O cliente precisa acompanhar seu pedido em `/[slug]/pedido/[orderId]` sem estar autenticado. O `orderId` gerado pelo Firestore tem 20 caracteres alfanuméricos aleatórios — a probabilidade de adivinhar um ID válido é desprezível na prática (similar a um token de sessão curto). Isso é um tradeoff consciente do MVP.
 
 ---
 
@@ -299,6 +310,79 @@ Requisição → unstable_cache → HIT: retorna cache (0 reads no Firestore)
 
 **Por que `setDoc` (com ID pré-gerado) e não `addDoc` no upload de imagem?**
 O caminho do Storage usa o `productId` como nome do arquivo (`stores/{storeId}/products/{productId}`). Para saber o ID antes de escrever no Firestore, geramos o ref com `doc(collection(...))` — que cria o ID sem ainda salvar o documento — e depois usamos `setDoc` com esse mesmo ref.
+
+---
+
+## StoreContext — Camada de Contexto Multi-tenant
+
+Arquivo: [`context/StoreContext.js`](context/StoreContext.js)
+
+Provedor instanciado no `[slug]/layout.js` (Server Component) como o **primeiro wrapper** da árvore de componentes. Recebe o documento completo da loja (já resolvido via cache ISR) e o disponibiliza via contexto React para qualquer Client Component filho — sem prop drilling.
+
+### Isolamento multi-tenant no cliente
+
+Cada rota `/[slug]` cria seu próprio `StoreProvider` com os dados exclusivos daquela loja. O React isola automaticamente os contextos: um componente renderizado em `/burger-do-ze` nunca acessa os dados de `/pizza-da-maria`, pois cada árvore tem seu próprio Provider.
+
+```
+/burger-do-ze                       /pizza-da-maria
+    └── StoreProvider                   └── StoreProvider
+          store = { id: "abc…" }              store = { id: "xyz…" }
+```
+
+### `useStoreContext()`
+
+Hook que extrai o `store_hash` (slug) do contexto de URL e retorna a configuração completa da loja correspondente. Deve ser chamado dentro da rota `/[slug]`.
+
+```js
+const { id, name, slug, isOpen, deliveryFee } = useStoreContext();
+```
+
+| Campo        | Tipo           | Descrição |
+|---|---|---|
+| `id`         | `string`       | Firestore document ID (`storeId`) — chave de todas as subcoleções |
+| `name`       | `string`       | Nome comercial da loja |
+| `slug`       | `string`       | `store_hash`: identificador único na URL (ex: `burger-do-ze`) |
+| `isOpen`     | `boolean`      | Status de abertura (valor inicial do servidor; `StoreStatusBadge` sincroniza via `onSnapshot`) |
+| `deliveryFee`| `number`       | Taxa de entrega em reais |
+| `minOrder`   | `number`       | Pedido mínimo em reais |
+| `logoUrl`    | `string\|null`  | URL do logo no Firebase Storage |
+| `bannerUrl`  | `string\|null`  | URL do banner no Firebase Storage |
+| `description`| `string`       | Descrição da loja |
+| `phone`      | `string`       | Telefone de contato |
+| `cnpj`       | `string?`      | CNPJ (opcional — pode ser a base para geração do slug) |
+
+### Hierarquia de contextos em `/[slug]`
+
+```
+StoreProvider          ← metadados da loja (id, name, isOpen, deliveryFee…)
+  └── CartProvider     ← estado do carrinho (items, total, drawer open/close…)
+        └── StoreHeader        → useStoreContext() + useCart()
+        └── StoreStatusBadge   → useStoreContext()
+        └── CartDrawer         → useCart()
+        └── CartBottomBar      → useCart()
+        └── {children}
+              └── ProductCatalog → useCart() via ProductCard
+              └── CheckoutPage   → useCart()
+```
+
+**Por que dois contextos separados?**
+`StoreContext` fornece metadados estáticos da loja (lidos uma vez no servidor). `CartContext` gerencia estado mutável e persistido no `localStorage`. Manter os dois separados permite que componentes que só precisam de dados da loja (ex: `StoreStatusBadge`) não sejam re-renderizados por mudanças no carrinho.
+
+---
+
+## Auditoria de Caminhos Firestore — Multi-tenant
+
+Todos os acessos ao Firestore usam caminhos dinâmicos derivados do `storeId` resolvido via contexto ou autenticação. **Nenhum `storeId` hardcoded** foi encontrado na base de código.
+
+| Arquivo | Caminho Firestore | Fonte do `storeId` |
+|---|---|---|
+| `[slug]/layout.js` | `slugs/{slug}` → `stores/{storeId}` | `params.slug` da URL |
+| `[slug]/checkout/page.js` | `stores/{storeId}/orders` | `useCart().storeId` |
+| `components/StoreStatusBadge.js` | `stores/{storeId}` | `useStoreContext().id` |
+| `components/OrderTracker.js` | `stores/{storeId}/orders/{orderId}` | props do Server Component pai |
+| `dashboard/produtos/page.js` | `stores` where `ownerId == uid` | Firebase Auth (`user.uid`) |
+| `dashboard/pedidos/page.js` | `stores/{storeId}/orders` | Firebase Auth (`user.uid`) |
+| `admin/actions.js` | `stores/` (todas) | Admin SDK — bypass de regras |
 
 ---
 

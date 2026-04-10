@@ -9,30 +9,63 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Verifica se o usuário autenticado é o dono da loja.
-    // Faz 1 leitura extra por operação — aceitável pois só ocorre em writes.
+    // Verifica se o usuário autenticado é o dono da loja referenciada por storeId.
+    // Faz 1 leitura extra por operação de escrita — aceitável pois nunca ocorre
+    // em leituras públicas (que são o bulk do tráfego).
+    //
+    // Isolamento multi-tenant: garante que o Admin da Loja A não possa escrever
+    // em nenhum documento da Loja B, mesmo conhecendo o storeId dela.
     function isStoreOwner(storeId) {
       return isAuthenticated()
         && get(/databases/$(database)/documents/stores/$(storeId)).data.ownerId
            == request.auth.uid;
     }
 
+    // Retorna true se o campo 'ownerId' não foi modificado na operação de update.
+    // Impede transferência de propriedade via cliente — só o Admin SDK pode
+    // reatribuir um ownerId (ex: para transferir a loja a outro usuário).
+    function ownerIdUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerId']);
+    }
+
+    // Retorna true se o campo 'slug' não foi modificado na operação de update.
+    // O slug é a chave do índice slugs/{slug}; atualizá-lo via cliente
+    // quebraria a consistência do índice. Alterações de slug devem ocorrer
+    // via Admin SDK (que também atualiza slugs/{slug} atomicamente).
+    function slugUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['slug']);
+    }
+
     // ─── slugs ────────────────────────────────────────────────────────────────
-    // Índice slug → storeId. Escrita exclusiva pelo Admin SDK (backend).
+    // Índice O(1): slug → storeId. Escrita exclusiva pelo Admin SDK (backend).
+    // Leitura pública: necessária para que o Server Component resolva o slug
+    // sem autenticação (cardápio público).
     match /slugs/{slug} {
       allow read:  if true;
-      allow write: if false; // Gerenciado apenas via Admin SDK
+      allow write: if false; // Gerenciado apenas via Admin SDK (createLojista / updateStore)
     }
 
     // ─── stores ───────────────────────────────────────────────────────────────
+    // Leitura pública: dados do cabeçalho (nome, logo, status) exibidos no cardápio.
+    // Escrita restrita:
+    //   create — qualquer usuário autenticado pode criar sua própria loja
+    //            (Sprint 11: onboarding self-service). ownerId deve ser o próprio UID.
+    //   update — somente o owner, e sem alterar ownerId nem slug (campos imutáveis
+    //            pelo cliente para manter integridade do índice de slugs e auditoria).
+    //   delete — somente o owner.
     match /stores/{storeId} {
       allow read:   if true;
       allow create: if isAuthenticated()
                     && request.resource.data.ownerId == request.auth.uid;
-      allow update,
-            delete: if isStoreOwner(storeId);
+      allow update: if isStoreOwner(storeId)
+                    && ownerIdUnchanged()
+                    && slugUnchanged();
+      allow delete: if isStoreOwner(storeId);
 
       // ── products ────────────────────────────────────────────────────────────
+      // Leitura pública: cardápio visível a qualquer visitante.
+      // Escrita restrita ao owner da loja pai — isStoreOwner(storeId) garante
+      // que o Admin da Loja A não possa criar/editar/deletar produtos da Loja B.
       match /products/{productId} {
         allow read:  if true;
         allow write: if isStoreOwner(storeId);
@@ -45,11 +78,14 @@ service cloud.firestore {
       }
 
       // ── orders ──────────────────────────────────────────────────────────────
-      // Criação pública (pedidos anônimos — MVP).
-      // Leitura pública: o orderId é gerado aleatoriamente pelo Firestore
-      // (20 chars alfanuméricos), tornando a adivinagem inviável na prática.
-      // Isso permite que o cliente rastreie seu pedido pelo link direto.
-      // Atualização restrita ao dono da loja (avanço de status).
+      // create: público — pedidos anônimos (MVP). Não requer autenticação do cliente.
+      // read:   público — o orderId tem 20 chars aleatórios (equivalente a um token
+      //         de sessão curto). O cliente acessa seu rastreio pelo link direto
+      //         sem precisar fazer login. Tradeoff consciente do MVP.
+      // update: somente o owner da loja (avanço de status pelo dashboard).
+      //         isStoreOwner(storeId) garante que o owner da Loja A não pode
+      //         alterar pedidos da Loja B.
+      // delete: bloqueado para todos — pedidos são registros imutáveis de negócio.
       match /orders/{orderId} {
         allow create: if true;
         allow read:   if true;
@@ -60,6 +96,7 @@ service cloud.firestore {
 
     // ─── users ────────────────────────────────────────────────────────────────
     // Reservado para expansão futura (conta de cliente registrado).
+    // Cada usuário acessa apenas seu próprio documento.
     match /users/{userId} {
       allow read,
             write: if isAuthenticated() && request.auth.uid == userId;
