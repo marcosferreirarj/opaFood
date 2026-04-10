@@ -1,0 +1,68 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── helpers ──────────────────────────────────────────────────────────────
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Verifica se o usuário autenticado é o dono da loja.
+    // Faz 1 leitura extra por operação — aceitável pois só ocorre em writes.
+    function isStoreOwner(storeId) {
+      return isAuthenticated()
+        && get(/databases/$(database)/documents/stores/$(storeId)).data.ownerId
+           == request.auth.uid;
+    }
+
+    // ─── slugs ────────────────────────────────────────────────────────────────
+    // Índice slug → storeId. Escrita exclusiva pelo Admin SDK (backend).
+    match /slugs/{slug} {
+      allow read:  if true;
+      allow write: if false; // Gerenciado apenas via Admin SDK
+    }
+
+    // ─── stores ───────────────────────────────────────────────────────────────
+    match /stores/{storeId} {
+      allow read:   if true;
+      allow create: if isAuthenticated()
+                    && request.resource.data.ownerId == request.auth.uid;
+      allow update,
+            delete: if isStoreOwner(storeId);
+
+      // ── products ────────────────────────────────────────────────────────────
+      match /products/{productId} {
+        allow read:  if true;
+        allow write: if isStoreOwner(storeId);
+      }
+
+      // ── categories ──────────────────────────────────────────────────────────
+      match /categories/{categoryId} {
+        allow read:  if true;
+        allow write: if isStoreOwner(storeId);
+      }
+
+      // ── orders ──────────────────────────────────────────────────────────────
+      // Criação pública (pedidos anônimos — MVP).
+      // Leitura pública: o orderId é gerado aleatoriamente pelo Firestore
+      // (20 chars alfanuméricos), tornando a adivinagem inviável na prática.
+      // Isso permite que o cliente rastreie seu pedido pelo link direto.
+      // Atualização restrita ao dono da loja (avanço de status).
+      match /orders/{orderId} {
+        allow create: if true;
+        allow read:   if true;
+        allow update: if isStoreOwner(storeId);
+        allow delete: if false;
+      }
+    }
+
+    // ─── users ────────────────────────────────────────────────────────────────
+    // Reservado para expansão futura (conta de cliente registrado).
+    match /users/{userId} {
+      allow read,
+            write: if isAuthenticated() && request.auth.uid == userId;
+    }
+  }
+}
